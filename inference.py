@@ -1,6 +1,6 @@
-import os, re, cv2
+import os, re, cv2, torch
 from typing import Union
-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
 
 class SimpleInference:
@@ -8,7 +8,7 @@ class SimpleInference:
     A class for performing inference using Hugging Face models.
     """
     
-    def __init__(self, model_id="BAAI/RoboBrain2.0-7B"):
+    def __init__(self, model_id="BAAI/RoboBrain2.0-3B"):
         """
         Initialize the model and processor.
         
@@ -16,9 +16,18 @@ class SimpleInference:
             model_id (str): Path or Hugging Face model identifier (default: "BAAI/RoboBrain2.0-7B")
         """
         print("Loading Checkpoint ...")
+
+        #quantization_config = BitsAndBytesConfig(load_in_8bit=True)
+        #quantization_config = BitsAndBytesConfig(
+        #    load_in_4bit=True,
+        #    bnb_4bit_compute_dtype=torch.bfloat16,
+        #    bnb_4bit_quant_type="nf4"  # Use "nf4" (Normalized Float 4) for best results
+        #)
+
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_id, 
+            model_id,
             torch_dtype="auto", 
+            #quantization_config=quantization_config, 
             device_map="auto"
         )
 
@@ -46,7 +55,7 @@ class SimpleInference:
             text = f"{text}. Your answer should be formatted as a list of tuples, i.e. [(x1, y1), (x2, y2), ...], where each tuple contains the x and y coordinates of a point satisfying the conditions above. The coordinates should indicate the normalized pixel locations of the points in the image."
         elif task == "affordance":
             print("Affordance task detected. We automatically add an affordance prompt for inference.")
-            text = f"You are a robot using the joint control. The task is \"{text}\". Please predict a possible affordance area of the end effector."
+            text = f"You are a robot using the joint control. The task is \"{text}\". Please predict a possible affordance area of the end effector. Your answer MUST be only a bounding box in the format [x1, y1, x2, y2]."
         elif task == "trajectory":
             print("Trajectory task detected. We automatically add a trajectory prompt for inference.")
             text = f"You are a robot using the joint control. The task is \"{text}\". Please predict up to 10 key trajectory points to complete the task. Your answer should be formatted as a list of tuples, i.e. [[x1, y1], [x2, y2], ...], where each tuple contains the x and y coordinates of a point."
@@ -94,7 +103,9 @@ class SimpleInference:
 
         # Inference
         print("Running inference ...")
-        generated_ids = self.model.generate(**inputs, max_new_tokens=768, do_sample=do_sample, temperature=temperature)
+
+        with torch.inference_mode():
+            generated_ids = self.model.generate(**inputs, max_new_tokens=768, do_sample=do_sample, temperature=temperature)
         generated_ids_trimmed = [
             out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
@@ -182,7 +193,7 @@ class SimpleInference:
             if points:
                 for point in points:
                     x, y = point
-                    cv2.circle(image, (x, y), 5, (0, 0, 255), -1)  # Red solid circle
+                    cv2.circle(image, (x, y), 10, (0, 0, 255), -1)  # Red solid circle
             
             # Draw bounding boxes
             if boxes:
@@ -219,7 +230,7 @@ class SimpleInference:
 
 if __name__ == "__main__":
 
-    model = SimpleInference("BAAI/RoboBrain2.0-7B")
+    model = SimpleInference("BAAI/RoboBrain2.0-3B")
 
     prompt = "What is shown in this image?"
     image = "http://images.cocodataset.org/val2017/000000039769.jpg"

@@ -1,0 +1,159 @@
+# realtime_client.py
+
+import requests
+import cv2
+import numpy as np
+import os
+import re
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+# --- Configuration ---
+SERVER_URL = "https://635e7c463771.ngrok-free.app/inference/" # Your ngrok URL
+PROMPT = "(Enter the prompt)" # Initial prompt
+DOT_RADIUS = 10
+DOT_COLOR = (0, 0, 255) # BGR format for OpenCV (Red)
+
+# --- State Variables ---
+trackers = []
+tracking_active = False
+is_detecting = False
+# A lock to safely modify shared variables from different threads
+lock = threading.Lock()
+
+def get_and_track_points(frame, prompt):
+    """
+    This function runs in a separate thread.
+    It gets points from the server and initializes trackers for them.
+    """
+    global trackers, tracking_active, is_detecting
+    
+    print("\n[Thread] Sending frame to server for initial detection...")
+    temp_frame_path = "temp_frame_for_thread.jpg"
+    cv2.imwrite(temp_frame_path, frame)
+
+    try:
+        files = {'image': (temp_frame_path, open(temp_frame_path, 'rb'), 'image/jpeg')}
+        payload = {'text': prompt}
+        response = requests.post(SERVER_URL, files=files, data=payload)
+        response.raise_for_status()
+        result = response.json()
+        print(f"[Thread] Server Answer: {result.get('answer')}")
+
+        answer_text = result.get('answer', '')
+        point_pattern = r'\(\s*(\d+)\s*,\s*(\d+)\s*\)'
+        extracted_points = re.findall(point_pattern, answer_text)
+        
+        if extracted_points:
+            points = [(int(x), int(y)) for x, y in extracted_points]
+            print(f"[Thread] Initial points detected at: {points}")
+            
+            new_trackers = []
+            for point in points:
+                bbox_size = 50
+                bbox = (point[0] - bbox_size // 2, point[1] - bbox_size // 2, bbox_size, bbox_size)
+                tracker = cv2.TrackerCSRT_create()
+                tracker.init(frame, bbox)
+                new_trackers.append(tracker)
+            
+            with lock:
+                trackers = new_trackers
+                tracking_active = True if trackers else False
+        else:
+            print("[Thread] Could not find any points in the server's response.")
+            with lock:
+                trackers = []
+                tracking_active = False
+
+    except requests.exceptions.RequestException as e:
+        print(f"[Thread] Network Error: {e}")
+    finally:
+        with lock:
+            is_detecting = False
+        if os.path.exists(temp_frame_path):
+            os.remove(temp_frame_path)
+
+def update_prompt_in_background():
+    """
+    This function runs in a separate thread to get user input
+    without blocking the main video loop.
+    """
+    global PROMPT
+    print("\n--- Prompt Change ---")
+    new_prompt = input("Enter new prompt: ")
+    with lock:
+        PROMPT = new_prompt
+    print(f"Prompt updated to: '{PROMPT}'")
+
+# --- Main Application Logic ---
+print(f"Initial prompt is: '{PROMPT}'. Press 'p' in the video window to change it.")
+droidcam_url = "http://192.168.133.7:4747/video"
+cap = cv2.VideoCapture(droidcam_url)
+if not cap.isOpened():
+    print(f"Error: Could not open DroidCam stream at {droidcam_url}")
+    exit()
+
+executor = ThreadPoolExecutor(max_workers=10)
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        print("Error: Can't receive frame. Exiting ...")
+        break
+
+    if tracking_active:
+        with lock:
+            futures = [executor.submit(tracker.update, frame) for tracker in trackers]
+            
+            updated_trackers = []
+            for i, future in enumerate(futures):
+                success, bbox = future.result()
+                if success:
+                    updated_trackers.append(trackers[i])
+                    center_x = int(bbox[0] + bbox[2] / 2)
+                    center_y = int(bbox[1] + bbox[3] / 2)
+                    cv2.circle(frame, (center_x, center_y), DOT_RADIUS, DOT_COLOR, -1)
+            
+            trackers = updated_trackers
+            if not trackers:
+                tracking_active = False
+                cv2.putText(frame, "Tracking Failure", (100, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 0, 255), 2)
+
+    if is_detecting:
+        cv2.putText(frame, "Detecting, please stand still for a bit...", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
+
+    # Display instructions
+    if not tracking_active and not is_detecting:
+        cv2.putText(frame, "Press 's' to select object(s)", (20, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+    cv2.putText(frame, "Press 'p' to change prompt", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+    cv2.putText(frame, "Press 'q' to quit", (20, 100), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 0), 2)
+    cv2.putText(frame, f"Prompt: {PROMPT}", (20, frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+    cv2.imshow("Real-time AR Tracking", frame)
+    key = cv2.waitKey(1) & 0xFF
+
+    if key == ord('q'):
+        break
+    
+    if key == ord('s'):
+        with lock:
+            tracking_active = False
+            is_detecting = True
+            trackers = []
+        thread = threading.Thread(target=get_and_track_points, args=(frame.copy(), PROMPT))
+        thread.start()
+            
+    if key == ord('p'):
+        with lock:
+            tracking_active = False
+            is_detecting = False
+            trackers = []
+        # --- MODIFIED: Start prompt input in a background thread ---
+        prompt_thread = threading.Thread(target=update_prompt_in_background)
+        prompt_thread.start()
+
+# --- Cleanup ---
+executor.shutdown()
+cap.release()
+cv2.destroyAllWindows()
