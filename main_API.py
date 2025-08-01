@@ -82,11 +82,11 @@ if __name__ == "__main__":
 
         # Start an ngrok tunnel to the uvicorn server
         # The 'public_url' variable will hold your public URL
-        public_url = ngrok.connect(8000)
+        public_url = ngrok.connect(8000, domain="balanced-vaguely-mastodon.ngrok-free.app")
         
         print("====================================================================")
         print(f"✅ Your server is live!")
-        print(f"✅ Public URL: {public_url}/inference/ ")
+        print(f"✅ Public URL: {public_url}")
         print("You can now use this URL in your client script from any network.")
         print("====================================================================")
 
