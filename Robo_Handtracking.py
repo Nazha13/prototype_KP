@@ -1,5 +1,3 @@
-# realtime_client_with_hand_interaction.py
-
 import requests
 import cv2
 import os
@@ -21,14 +19,16 @@ class RealTimeARClient:
         self.prompt = "Point to the keyboard keys"
         self.dot_radius = 10
         self.dot_color = (0, 0, 255)
+        self.pop_effects = []
 
         # --- State Variables ---
         self.trackers = []
         self.tracking_active = False
         self.is_detecting = False
+        self.redetection_trigger_time = None
         self.is_typing_prompt = False
         self.typed_prompt = ""
-        self.latest_hand_results = None # Store results from the hand tracking thread
+        self.latest_hand_results = None
         self.lock = threading.Lock()
         self.executor = ThreadPoolExecutor(max_workers=10)
 
@@ -41,7 +41,7 @@ class RealTimeARClient:
         """
         [Threaded] Gets points from the server and initializes 2D trackers.
         """
-        print("\n[Thread] Sending frame to server for initial detection...")
+        print(f"\n[Thread] Sending frame to server for detection with prompt: '{prompt}'")
         temp_frame_path = "temp_frame_for_thread.jpg"
         cv2.imwrite(temp_frame_path, frame)
 
@@ -98,6 +98,9 @@ class RealTimeARClient:
                 center_y = int(bbox[1] + bbox[3] / 2)
                 dot_positions.append((center_x, center_y))
 
+        if len(self.trackers) > 0 and len(updated_trackers) == 0:
+            self.tracking_active = False
+
         self.trackers = updated_trackers
         if not self.trackers:
             self.tracking_active = False
@@ -122,6 +125,8 @@ class RealTimeARClient:
             prompt_text = f"New Prompt: {self.typed_prompt}{cursor}"
             cv2.putText(frame, prompt_text, (20, frame.shape[0] - 45), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 2)
         else:
+            if self.redetection_trigger_time is not None:
+                cv2.putText(frame, "Trackers lost. Re-detecting soon...", (20, 160), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 165, 255), 2)
             if self.is_detecting:
                 cv2.putText(frame, "Detecting, please stand still...", (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
             if not self.tracking_active and not self.is_detecting:
@@ -156,6 +161,7 @@ class RealTimeARClient:
                 self.tracking_active = False
                 self.is_detecting = True
                 self.trackers = []
+                self.redetection_trigger_time = None
             threading.Thread(target=self._get_and_track_points, args=(frame.copy(), self.prompt)).start()
 
         if key == ord('p'):
@@ -165,6 +171,7 @@ class RealTimeARClient:
                 self.trackers = []
                 self.is_typing_prompt = True
                 self.typed_prompt = ""
+                self.redetection_trigger_time = None
 
         return True
 
@@ -192,7 +199,6 @@ class RealTimeARClient:
                 with self.lock:
                     dot_positions = self._update_trackers(frame)
 
-            # --- Run hand processing in a background thread to prevent lag ---
             if hand_thread is None or not hand_thread.is_alive():
                 hand_thread = threading.Thread(target=self._process_hands_in_background, args=(frame.copy(),))
                 hand_thread.start()
@@ -202,18 +208,29 @@ class RealTimeARClient:
                     index_finger_tip = hand_lms.landmark[self.handtrack_hands.HandLandmark.INDEX_FINGER_TIP]
                     ix, iy = int(index_finger_tip.x * w), int(index_finger_tip.y * h)
 
-                    surviving_trackers = []
-                    surviving_dots = []
                     with self.lock:
-                        for i, dot_pos in enumerate(dot_positions):
+                        dots_were_popped = False
+                        surviving_trackers = list(self.trackers)
+                        surviving_dots = list(dot_positions)
+
+                        for i in range(len(dot_positions) - 1, -1, -1):
+                            dot_pos = dot_positions[i]
                             distance = ((ix - dot_pos[0])**2 + (iy - dot_pos[1])**2)**0.5
                             if distance < self.dot_radius:
-                                print("Collision detected! Dot removed.")
-                            else:
-                                surviving_trackers.append(self.trackers[i])
-                                surviving_dots.append(dot_pos)
+                                dots_were_popped = True
+                                print(f"Popped a dot at {dot_pos}!")
+                                self.pop_effects.append({"pos": dot_pos, "time": time.time()})
+                                del surviving_trackers[i]
+                                del surviving_dots[i]
+
                         self.trackers = surviving_trackers
                         dot_positions = surviving_dots
+
+                        if dots_were_popped and not self.trackers:
+                            print("\nTask complete! Please enter a new prompt.")
+                            self.is_typing_prompt = True
+                            self.typed_prompt = ""
+                            self.redetection_trigger_time = None
 
                     if dot_positions:
                         distances = [((ix - dx)**2 + (iy - dy)**2)**0.5 for dx, dy in dot_positions]
@@ -222,11 +239,26 @@ class RealTimeARClient:
 
                     self.handtrack_draw.draw_landmarks(frame, hand_lms, self.handtrack_hands.HAND_CONNECTIONS)
 
-            # --- Auto-prompt after last dot is popped ---
-            if was_tracking and not self.trackers:
+            if was_tracking and not self.trackers and not self.is_typing_prompt:
                 with self.lock:
-                    self.is_typing_prompt = True
-                    self.typed_prompt = ""
+                    if not self.is_detecting and self.redetection_trigger_time is None:
+                        print("\nTrackers lost. Re-detecting in a moment...")
+                        self.redetection_trigger_time = time.time()
+
+            if self.redetection_trigger_time is not None and not self.is_detecting:
+                delay_seconds = 2.0
+                if time.time() - self.redetection_trigger_time > delay_seconds:
+                    print(f"Delay of {delay_seconds}s over. Triggering re-detection...")
+                    with self.lock:
+                        self.is_detecting = True
+                        self.redetection_trigger_time = None
+                    threading.Thread(target=self._get_and_track_points, args=(frame.copy(), self.prompt)).start()
+
+            for effect in self.pop_effects[:]:
+                if time.time() - effect["time"] < 0.5:
+                    cv2.circle(frame, effect["pos"], self.dot_radius + 5, (0, 255, 0), 3)
+                else:
+                    self.pop_effects.remove(effect)
 
             for dot_pos in dot_positions:
                 cv2.circle(frame, dot_pos, self.dot_radius, self.dot_color, -1)

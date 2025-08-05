@@ -33,7 +33,7 @@ class SimpleInference:
 
         self.processor = AutoProcessor.from_pretrained(model_id)
         
-    def inference(self, text:str, image: Union[list,str], task="general", plot=False, enable_thinking=True, do_sample=True, temperature=0.7):
+    def inference(self, text:str, image: Union[list,str], task="general", plot=False, enable_thinking=True, do_sample=True, temperature=0.5):
         """Perform inference with text and images input.
         Args:
             text (str): The input text prompt.
