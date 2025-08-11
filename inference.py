@@ -33,7 +33,7 @@ class SimpleInference:
 
         self.processor = AutoProcessor.from_pretrained(model_id)
         
-    def inference(self, text:str, image: Union[list,str], task="general", plot=False, enable_thinking=True, do_sample=True, temperature=0.5):
+    def inference(self, text:str, image: Union[list,str], task="general", plot=False, enable_thinking=True, do_sample=True, temperature=0.7):
         """Perform inference with text and images input.
         Args:
             text (str): The input text prompt.
@@ -47,8 +47,8 @@ class SimpleInference:
         if isinstance(image, str):
             image = [image]
 
-        assert task in ["general", "pointing", "affordance", "trajectory", "grounding"], f"Invalid task type: {task}. Supported tasks are 'general', 'pointing', 'affordance', 'trajectory', 'grounding'."
-        assert task == "general" or (task in ["pointing", "affordance", "trajectory", "grounding"] and len(image) == 1), "Pointing, affordance, grounding, and trajectory tasks require exactly one image."
+        assert task in ["general", "pointing", "affordance", "trajectory", "grounding", "verify", "object"], f"Invalid task type: {task}. Supported tasks are 'general', 'pointing', 'affordance', 'trajectory', 'grounding'."
+        assert task == "general" or (task in ["pointing", "affordance", "trajectory", "grounding", "verify", "object"] and len(image) == 1), "Pointing, affordance, grounding, verify, object, and trajectory tasks require exactly one image."
 
         if task == "pointing":
             print("Pointing task detected. We automatically add a pointing prompt for inference.")
@@ -62,7 +62,12 @@ class SimpleInference:
         elif task == "grounding":
             print("Grounding task detected. We automatically add a grounding prompt for inference.")
             text = f"Please provide the bounding box coordinate of the region this sentence describes: {text}."
-
+        elif task == "verify":
+            print("Verify task detected. We automatically add a verification prompt for inference.")
+            text = f"Please identify the object in the image. Compare the identified object with the object from the prompt: {text}. Your answer should be 'same' or 'different'." 
+        elif task == "object":
+            print("Object task detected. we automatically add an object keyword detection for the prompt.")
+            text = f"from the prompt : \"{text}\". What am I looking for?. use the prompt itself as reference, don't look at the image. your answer should be the object's name NOT the object's feature."
         print(F"##### INPUT #####\n{text}\n###############")
 
         messages = [

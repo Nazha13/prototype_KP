@@ -1,0 +1,150 @@
+import requests
+import os
+import re
+from PIL import Image, ImageDraw
+import sys
+import tkinter as tk
+from tkinter import filedialog
+
+# This assumes you have a 'Resize.py' file with the 'process_and_resize_image' function.
+try:
+    from Resize import process_and_resize_image
+except ImportError:
+    print("Warning: 'Resize.py' not found. The script will use the original image without resizing.")
+    # Define a dummy function if the import fails so the script doesn't crash
+    def process_and_resize_image(image_path, size):
+        print(f"Resize function not available. Using original image: {image_path}")
+        return image_path
+
+# --- Configuration ---
+# Replace with your server's URL if it changes.
+SERVER_URL = "https://balanced-vaguely-mastodon.ngrok-free.app/inference/"
+DOT_RADIUS = 6  # ADJUSTABLE: Change the size of the dots here
+
+# --- GUI function to upload image ---
+def upload_image_gui():
+    """
+    Opens a file dialog to select an image and returns its path.
+    """
+    root = tk.Tk()
+    root.withdraw()  # Hide the main tkinter window
+    
+    # Open file dialog and restrict to common image types
+    file_path = filedialog.askopenfilename(
+        title="Select an Image File",
+        filetypes=[("Image Files", "*.jpeg *.jpg *.png *.bmp *.gif"), ("All files", "*.*")]
+    )
+    root.destroy()
+    return file_path
+
+# --- Helper function to draw on the image ---
+def draw_points_on_image(image_path, points, radius):
+    """
+    Draws points on an image and saves it into a specific directory.
+    
+    Args:
+        image_path (str): The path to the original image.
+        points (list): A list of tuples, e.g., [(x1, y1), (x2, y2)].
+        radius (int): The radius of the circles to draw.
+    """
+    try:
+        # Use the original image path for drawing
+        with Image.open(image_path) as img:
+            draw = ImageDraw.Draw(img)
+            fill_color = "red"
+            
+            for point in points:
+                x, y = point
+                bbox = [x - radius, y - radius, x + radius, y + radius]
+                draw.ellipse(bbox, fill=fill_color, outline="black")
+
+            output_dir = "Microwave_result"
+            os.makedirs(output_dir, exist_ok=True)
+
+            base_filename, ext = os.path.splitext(os.path.basename(image_path))
+            i = 1
+            new_filename = f"{base_filename}_annotated_{i}{ext}"
+            output_path = os.path.join(output_dir, new_filename)
+            while os.path.exists(output_path):
+                i += 1
+                new_filename = f"{base_filename}_annotated_{i}{ext}"
+                output_path = os.path.join(output_dir, new_filename)
+
+            img.save(output_path)
+            print(f"\n✅ Annotated image saved to: {output_path}")
+
+    except Exception as e:
+        print(f"\n❌ Error drawing on image: {e}")
+
+# --- Main execution block ---
+
+# 1. Get image path from the user via GUI
+image_path_input = upload_image_gui()
+
+if not image_path_input:
+    print("No image selected. Exiting program.")
+    sys.exit()
+
+print(f"Selected image: {image_path_input}")
+
+try:
+    # Process the image (e.g., resize it)
+    processed_image_path = process_and_resize_image(image_path_input, 500)
+except Exception as e:
+    print(f"Error processing image: {e}. Please try another file.")
+    sys.exit()
+
+# 2. Start the continuous prompting loop for the selected image
+while True:
+    prompt = input("\nUser Prompt: ")
+    if not prompt:
+        print("Prompt cannot be empty.")
+        continue
+
+    with open(processed_image_path, 'rb') as f:
+        files = {'image': (os.path.basename(processed_image_path), f, 'image/jpeg')}
+        payload = {'text': prompt}
+
+        print(f"Sending request to server at {SERVER_URL}...")
+        try:
+            response = requests.post(SERVER_URL, files=files, data=payload)
+            response.raise_for_status()  # Raise an exception for bad status codes
+            
+            result = response.json()
+            
+            print("\n--- ✅ Server Response ---")
+            print(f"Thinking: {result.get('thinking')}")
+            print(f"Answer: {result.get('answer')}")
+            print("---------------------------")
+
+            # --- Parse coordinates and draw points ---
+            answer_text = result.get('answer', '')
+            point_pattern = r'\(\s*(\d+)\s*,\s*(\d+)\s*\)'
+            extracted_points = re.findall(point_pattern, answer_text)
+            
+            if extracted_points:
+                points_to_draw = [(int(x), int(y)) for x, y in extracted_points]
+                print(f"\nFound {len(points_to_draw)} points to draw: {points_to_draw}")
+                draw_points_on_image(image_path_input, points_to_draw, DOT_RADIUS)
+            else:
+                print("\nNo coordinates found in the answer to draw.")
+
+        except requests.exceptions.RequestException as e:
+            print(f"\n--- ❌ Network Error ---")
+            print(f"An error occurred: {e}")
+        except Exception as e:
+            print(f"\n--- ❌ An Unexpected Error Occurred ---")
+            print(f"Details: {e}")
+
+    # 3. Ask the user if they want to continue or quit
+    while True:
+        control_input = input("\nPress 'p' to ask another question, or 'q' to quit: ").lower()
+        if control_input in ['p', 'q']:
+            break
+        else:
+            print("Invalid input. Please press 'p' or 'q'.")
+    
+    if control_input == 'q':
+        print("Exiting.")
+        break
+    # If 'p', the loop will automatically continue

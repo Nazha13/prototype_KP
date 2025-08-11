@@ -32,7 +32,7 @@ async def run_inference(
     text: str = Form(...),
     image: UploadFile = File(...),
     do_sample: bool = Form(True),
-    temperature: float = Form(0.7)
+    temperature: float = Form(0.5)
 ):
     TEMP_DIR = "temp_images"
     os.makedirs(TEMP_DIR, exist_ok=True)
